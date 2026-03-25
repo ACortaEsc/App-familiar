@@ -28,13 +28,12 @@
   .prio-badge.mitjana{background:#3d2e10;color:#FAC775}
   .prio-badge.baixa{background:#1a2e1a;color:#97C459}
   input,select,textarea{background:#2c2c2e!important;color:#f5f5f0!important;border-color:rgba(255,255,255,0.15)!important}
-  .task,.add-form,.despesa-item,.resum-card,.chart-wrap,.cal-day,.scan-box{background:#2c2c2e}
+  .task,.add-form,.despesa-item,.resum-card,.chart-wrap,.cal-day{background:#2c2c2e}
   .saved-item{background:#2c2c2e;color:#aeaead}
   .tab{background:#2c2c2e}.tab.active{background:#f5f5f0;color:#1a1a1a}
   .nav-btn{color:#aeaead}.nav-btn.active{color:#f5f5f0;border-top-color:#f5f5f0}
   .cal-day.today{border-color:rgba(255,255,255,0.5)}
   .task.vencuda{background:#2d1a1a}.task.proxima{background:#2d2510}
-  .scan-btn{background:#2c2c2e;color:#aeaead}
 }
 html,body{height:100%;background:var(--bg3);font-family:var(--font);color:var(--text)}
 .shell{max-width:640px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;background:var(--bg3)}
@@ -144,17 +143,6 @@ select{height:38px;padding:0 8px;border:0.5px solid var(--border2);border-radius
 .cal-task-mini.ok{background:var(--bg2);color:var(--text2)}
 .urgents-title{font-size:13px;font-weight:500;color:var(--text2);margin-bottom:8px}
 
-/* SCAN */
-.scan-box{background:var(--bg);border:0.5px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:10px}
-.scan-title{font-size:13px;font-weight:500;color:var(--text2);margin-bottom:8px}
-.scan-btn{width:100%;height:44px;border-radius:var(--rsm);border:1px dashed var(--border2);background:var(--bg2);color:var(--text2);font-size:13px;cursor:pointer;font-family:var(--font);display:flex;align-items:center;justify-content:center;gap:8px;transition:all 0.15s}
-.scan-btn:hover{border-color:var(--text);color:var(--text)}
-.scan-row{display:flex;gap:8px;align-items:center}
-.scan-preview{width:44px;height:44px;object-fit:cover;border-radius:6px;border:0.5px solid var(--border);flex-shrink:0;display:none}
-.scan-status{margin-top:8px;font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px;min-height:18px}
-.spinner{width:13px;height:13px;border:2px solid var(--border2);border-top-color:var(--text);border-radius:50%;animation:spin 0.7s linear infinite;flex-shrink:0}
-@keyframes spin{to{transform:rotate(360deg)}}
-
 /* DESPESES */
 .despesa-item{display:flex;align-items:center;gap:9px;padding:10px 11px;background:var(--bg);border:0.5px solid var(--border);border-radius:var(--r)}
 .desp-cat-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
@@ -197,7 +185,10 @@ select{height:38px;padding:0 8px;border:0.5px solid var(--border2);border-radius
 <div class="shell">
 
 <header>
-  <div class="header-title">🏠 Casa Família</div>
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    <div class="header-title">🏠 Casa Família</div>
+    <div id="sync-status" style="font-size:13px;color:var(--text3);opacity:0;transition:opacity 0.5s;padding-right:2px"></div>
+  </div>
   <div class="header-sub" id="header-sub"></div>
 </header>
 
@@ -225,19 +216,6 @@ select{height:38px;padding:0 8px;border:0.5px solid var(--border2);border-radius
 
   <!-- DESPESES -->
   <div class="screen" id="screen-despeses">
-
-    <!-- SCAN -->
-    <div class="scan-box">
-      <div class="scan-title">📷 Escanejar tiquet amb IA</div>
-      <div class="scan-row">
-        <button class="scan-btn" id="scan-trigger" onclick="document.getElementById('scan-input').click()">
-          <span>📷</span> Fer foto o triar imatge
-        </button>
-        <img id="scan-preview" class="scan-preview">
-      </div>
-      <input type="file" id="scan-input" accept="image/*" style="display:none" onchange="scanReceipt(this)">
-      <div class="scan-status" id="scan-status"></div>
-    </div>
 
     <!-- FORMULARI -->
     <div class="add-form">
@@ -320,6 +298,8 @@ const CATS={
 const MESOS=['Gener','Febrer','Març','Abril','Maig','Juny','Juliol','Agost','Setembre','Octubre','Novembre','Desembre'];
 const DIES=['Dl','Dt','Dc','Dj','Dv','Ds','Dg'];
 
+const FIREBASE_URL='https://casa-familia-9e27f-default-rtdb.europe-west1.firebasedatabase.app';
+
 const DEF={
   tasks:{olot:[],escala:[],super:[]},
   savedSuper:['Llet','Pa','Fruita','Ous','Formatge','Pasta','Arròs','Oli'],
@@ -332,8 +312,103 @@ const DEF={
   despFilter:'all'
 };
 
-function load(){try{const s=localStorage.getItem('casa-v5');if(s)return JSON.parse(s);}catch(e){}return JSON.parse(JSON.stringify(DEF));}
-function save(){try{localStorage.setItem('casa-v5',JSON.stringify(state));}catch(e){}}
+// --- FIREBASE SYNC ---
+let saveTimeout=null;
+let isOnline=navigator.onLine;
+let pendingSave=false;
+
+function load(){
+  try{const s=localStorage.getItem('casa-v5');if(s)return JSON.parse(s);}catch(e){}
+  return JSON.parse(JSON.stringify(DEF));
+}
+
+function saveLocal(){
+  try{localStorage.setItem('casa-v5',JSON.stringify(state));}catch(e){}
+}
+
+async function saveToFirebase(){
+  try{
+    const resp=await fetch(FIREBASE_URL+'/state.json',{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(state)
+    });
+    if(!resp.ok)throw new Error('Firebase error '+resp.status);
+    pendingSave=false;
+    showSyncStatus('✓');
+  }catch(e){
+    pendingSave=true;
+    showSyncStatus('⚠️');
+  }
+}
+
+function save(){
+  saveLocal();
+  clearTimeout(saveTimeout);
+  saveTimeout=setTimeout(()=>saveToFirebase(),600);
+}
+
+function showSyncStatus(icon){
+  let el=document.getElementById('sync-status');
+  if(!el)return;
+  el.textContent=icon;
+  el.style.opacity='1';
+  setTimeout(()=>el.style.opacity='0',2000);
+}
+
+async function loadFromFirebase(){
+  showSyncStatus('⟳');
+  try{
+    const resp=await fetch(FIREBASE_URL+'/state.json');
+    if(!resp.ok)throw new Error('Firebase error '+resp.status);
+    const remote=await resp.json();
+    if(remote&&typeof remote==='object'){
+      state=remote;
+      ['despeses','savedSuper','newDeadline','despFilter'].forEach(k=>{if(state[k]==null)state[k]=DEF[k];});
+      saveLocal();
+      render();
+      showSyncStatus('✓');
+    }
+  }catch(e){
+    showSyncStatus('⚠️');
+  }
+}
+
+// Escolta canvis en temps real via SSE (Firebase streaming)
+let evtSource=null;
+function startFirebaseListener(){
+  if(evtSource)evtSource.close();
+  try{
+    evtSource=new EventSource(FIREBASE_URL+'/state.json?accept=text/event-stream');
+    evtSource.addEventListener('put',e=>{
+      try{
+        const d=JSON.parse(e.data);
+        if(d&&d.data&&typeof d.data==='object'){
+          // Evita actualitzar si és el nostre propi save recent
+          const remote=d.data;
+          if(JSON.stringify(remote)===JSON.stringify(state))return;
+          state=remote;
+          ['despeses','savedSuper','newDeadline','despFilter'].forEach(k=>{if(state[k]==null)state[k]=DEF[k];});
+          saveLocal();
+          render();
+          showSyncStatus('🔄');
+        }
+      }catch(err){}
+    });
+    evtSource.onerror=()=>{
+      evtSource.close();
+      // Reintenta connexió cada 10s
+      setTimeout(startFirebaseListener,10000);
+    };
+  }catch(err){}
+}
+
+window.addEventListener('online',()=>{
+  isOnline=true;
+  if(pendingSave)saveToFirebase();
+  startFirebaseListener();
+});
+window.addEventListener('offline',()=>{isOnline=false;showSyncStatus('⚠️');});
 
 let state=load();
 ['despeses','savedSuper','newDeadline','despFilter'].forEach(k=>{if(state[k]==null)state[k]=DEF[k];});
@@ -523,93 +598,6 @@ function renderCal(){
   document.getElementById('urgents-section').innerHTML=html;
 }
 
-/* ---- SCAN TIQUET ---- */
-async function scanReceipt(input){
-  if(!input.files||!input.files[0])return;
-  const file=input.files[0];
-
-  const preview=document.getElementById('scan-preview');
-  const status=document.getElementById('scan-status');
-
-  const objUrl=URL.createObjectURL(file);
-  preview.src=objUrl;preview.style.display='block';
-  status.innerHTML='<div class="spinner"></div> Analitzant el tiquet…';
-
-  // Compress image before sending
-  const compressed=await compressImage(file,800);
-  const base64=compressed.split(',')[1];
-  const mediaType='image/jpeg';
-
-  try{
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514',
-        max_tokens:400,
-        messages:[{
-          role:'user',
-          content:[
-            {type:'image',source:{type:'base64',media_type:mediaType,data:base64}},
-            {type:'text',text:`Analitza aquest tiquet o factura. Respon ÚNICAMENT amb JSON vàlid, sense cap altre text ni marques de codi markdown. Format exacte:
-{"desc":"nom curt del comerç o tipus de despesa (màx 30 caràcters)","import":12.50,"cat":"alimentacio"}
-Categories possibles: alimentacio, transport, casa, oci, salut, roba, altres.
-Si no es llegeix l'import, posa 0. Si no es llegeix el comerç, posa "Despesa".`}
-          ]
-        }]
-      })
-    });
-
-    if(!resp.ok){
-      const err=await resp.json().catch(()=>({}));
-      throw new Error(err.error?.message||`Error ${resp.status}`);
-    }
-
-    const data=await resp.json();
-    const raw=(data.content||[]).map(b=>b.text||'').join('').trim();
-    const clean=raw.replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'').trim();
-
-    let parsed;
-    try{parsed=JSON.parse(clean);}
-    catch(e){throw new Error('No he pogut interpretar la resposta de la IA');}
-
-    if(parsed.desc)document.getElementById('desp-desc').value=parsed.desc;
-    if(parsed.import&&parsed.import>0)document.getElementById('desp-import').value=parseFloat(parsed.import).toFixed(2);
-    if(parsed.cat&&CATS[parsed.cat])document.getElementById('desp-cat').value=parsed.cat;
-
-    status.innerHTML='✅ Tiquet llegit! Revisa els camps i prem Afegir.';
-    showToast('Tiquet escanejat!');
-
-  }catch(err){
-    console.error(err);
-    status.innerHTML=`⚠️ ${err.message||'Error'} — omple els camps manualment.`;
-  }
-  input.value='';
-}
-
-function compressImage(file,maxSize){
-  return new Promise((resolve)=>{
-    const img=new Image();
-    const url=URL.createObjectURL(file);
-    img.onload=()=>{
-      const canvas=document.createElement('canvas');
-      let w=img.width,h=img.height;
-      if(w>h&&w>maxSize){h=Math.round(h*maxSize/w);w=maxSize;}
-      else if(h>maxSize){w=Math.round(w*maxSize/h);h=maxSize;}
-      canvas.width=w;canvas.height=h;
-      canvas.getContext('2d').drawImage(img,0,0,w,h);
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL('image/jpeg',0.85));
-    };
-    img.onerror=()=>{
-      const reader=new FileReader();
-      reader.onload=e=>resolve(e.target.result);
-      reader.readAsDataURL(file);
-    };
-    img.src=url;
-  });
-}
-
 /* ---- DESPESES ---- */
 function addDespesa(){
   const desc=document.getElementById('desp-desc').value.trim();
@@ -621,8 +609,6 @@ function addDespesa(){
   state.despeses.push({id:state.nextId++,desc,import:imp,cat,qui,any:now.getFullYear(),mes:now.getMonth()});
   document.getElementById('desp-desc').value='';
   document.getElementById('desp-import').value='';
-  document.getElementById('scan-preview').style.display='none';
-  document.getElementById('scan-status').innerHTML='';
   save();renderDespeses();showToast('Despesa afegida!');
 }
 
@@ -705,6 +691,8 @@ function delD(id){state.despeses=state.despeses.filter(d=>d.id!==id);save();rend
 
 // Init
 render();
+loadFromFirebase();
+startFirebaseListener();
 </script>
 </body>
 </html>
